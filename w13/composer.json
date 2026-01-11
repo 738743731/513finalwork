@@ -1,0 +1,20 @@
+{
+    "name": "gamehub/store",
+    "description": "GameHub Game Store Website",
+    "type": "project",
+    "require": {
+        "php": ">=7.4",
+        "phpmailer/phpmailer": "^6.6"
+    },
+    "autoload": {
+        "psr-4": {
+            "GameHub\\": "src/"
+        }
+    },
+    "scripts": {
+        "post-install-cmd": [
+            "php -r \"copy('config/example.config.php', 'config/config.php');\"",
+            "echo 'Configuration file created. Please edit config/config.php with your settings.'"
+        ]
+    }
+}
