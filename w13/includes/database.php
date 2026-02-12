@@ -110,6 +110,90 @@ class Database {
     public function getError() {
         return $this->conn->errorInfo();
     }
+
+    // 在Database类中添加或修改以下方法：
+
+public function createOrder($user_id, $total, $customer_name, $customer_email, $customer_address, $status = 'pending') {
+    try {
+        $this->beginTransaction();
+        
+        $order_id = $this->insert(
+            "INSERT INTO orders (user_id, total, status, customer_name, customer_email, customer_address, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, NOW())",
+            [$user_id, $total, $status, $customer_name, $customer_email, $customer_address]
+        );
+        
+        $this->commit();
+        return $order_id;
+    } catch (Exception $e) {
+        $this->rollBack();
+        throw $e;
+    }
+}
+
+public function addOrderItem($order_id, $game_id, $game_name, $quantity, $price) {
+    return $this->insert(
+        "INSERT INTO order_items (order_id, game_id, game_name, quantity, price) 
+        VALUES (?, ?, ?, ?, ?)",
+        [$order_id, $game_id, $game_name, $quantity, $price]
+    );
+}
+
+    // 新增：批量添加订单项
+    public function addOrderItems($order_id, $items) {
+        try {
+            $this->beginTransaction();
+            
+            foreach ($items as $item) {
+                $this->addOrderItem(
+                    $order_id,
+                    $item['game_id'],
+                    $item['game_name'],
+                    $item['quantity'],
+                    $item['price']
+                );
+            }
+            
+            $this->commit();
+            return true;
+        } catch (Exception $e) {
+            $this->rollBack();
+            throw $e;
+        }
+    }
+
+    // 新增：获取用户订单
+    public function getUserOrders($user_id) {
+        return $this->fetchAll(
+            "SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC",
+            [$user_id]
+        );
+    }
+
+    // 新增：获取订单详情
+    public function getOrderDetails($order_id) {
+        $order = $this->fetchOne(
+            "SELECT * FROM orders WHERE id = ?",
+            [$order_id]
+        );
+        
+        if ($order) {
+            $order['items'] = $this->fetchAll(
+                "SELECT * FROM order_items WHERE order_id = ?",
+                [$order_id]
+            );
+        }
+        
+        return $order;
+    }
+
+    // 新增：更新订单状态
+    public function updateOrderStatus($order_id, $status) {
+        return $this->update(
+            "UPDATE orders SET status = ? WHERE id = ?",
+            [$status, $order_id]
+        );
+    }
 }
 
 // 可选：创建一个全局的数据库连接实例

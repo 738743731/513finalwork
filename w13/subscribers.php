@@ -25,6 +25,51 @@ if (!$conn) {
     // 不要退出，继续显示页面但有错误信息
 }
 
+// 处理删除订阅者请求
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_subscriber'])) {
+    if (!$conn) {
+        $_SESSION['message'] = 'Database connection error. Cannot delete subscriber.';
+        $_SESSION['message_type'] = 'error';
+    } else {
+        $subscriber_id = intval($_POST['subscriber_id']);
+        
+        if ($subscriber_id > 0) {
+            // 删除订阅者
+            $delete_query = "DELETE FROM wp9k_fc_subscribers WHERE id = ?";
+            $stmt = mysqli_prepare($conn, $delete_query);
+            
+            if ($stmt) {
+                mysqli_stmt_bind_param($stmt, "i", $subscriber_id);
+                
+                if (mysqli_stmt_execute($stmt)) {
+                    if (mysqli_stmt_affected_rows($stmt) > 0) {
+                        $_SESSION['message'] = 'Subscriber deleted successfully!';
+                        $_SESSION['message_type'] = 'success';
+                    } else {
+                        $_SESSION['message'] = 'Subscriber not found or already deleted.';
+                        $_SESSION['message_type'] = 'warning';
+                    }
+                } else {
+                    $_SESSION['message'] = 'Error deleting subscriber: ' . mysqli_error($conn);
+                    $_SESSION['message_type'] = 'error';
+                }
+                
+                mysqli_stmt_close($stmt);
+            } else {
+                $_SESSION['message'] = 'Database error preparing delete statement.';
+                $_SESSION['message_type'] = 'error';
+            }
+        } else {
+            $_SESSION['message'] = 'Invalid subscriber ID.';
+            $_SESSION['message_type'] = 'error';
+        }
+    }
+    
+    // 重定向回当前页面以刷新数据
+    header('Location: ' . $_SERVER['PHP_SELF']);
+    exit();
+}
+
 // 获取订阅者数据
 function getSubscribers($connection) {
     if (!$connection) return [];
@@ -82,6 +127,23 @@ require_once 'includes/header.php';
 ?>
 
 <div class="content">
+    <?php 
+    // 显示操作消息
+    if (isset($_SESSION['message'])): 
+        $alert_class = $_SESSION['message_type'] === 'success' ? 'alert-success' : 
+                      ($_SESSION['message_type'] === 'warning' ? 'alert-warning' : 
+                      ($_SESSION['message_type'] === 'info' ? 'alert-info' : 'alert-error'));
+    ?>
+        <div class="alert <?php echo $alert_class; ?> alert-dismissible">
+            <?php echo $_SESSION['message']; ?>
+            <button type="button" class="close-btn" onclick="this.parentElement.style.display='none'">×</button>
+        </div>
+        <?php 
+        unset($_SESSION['message']);
+        unset($_SESSION['message_type']);
+        ?>
+    <?php endif; ?>
+    
     <?php if(isset($error_message)): ?>
         <div class="alert alert-error">
             <strong>Database Error:</strong> <?php echo $error_message; ?>
@@ -124,11 +186,12 @@ require_once 'includes/header.php';
                             ?>
                             <th><?php echo $formatted_column; ?></th>
                         <?php endforeach; ?>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php foreach ($subscribers as $subscriber): ?>
-                        <tr>
+                        <tr data-id="<?php echo $subscriber['id']; ?>">
                             <?php foreach ($columns as $column): ?>
                                 <td>
                                     <?php 
@@ -149,6 +212,13 @@ require_once 'includes/header.php';
                                     ?>
                                 </td>
                             <?php endforeach; ?>
+                            <td>
+                                <div class="action-buttons">
+                                    <button class="btn btn-danger btn-sm" onclick="confirmDelete(<?php echo $subscriber['id']; ?>, '<?php echo htmlspecialchars(addslashes($subscriber['email'] ?? 'N/A')); ?>')">
+                                        <i class="fas fa-trash"></i> Delete
+                                    </button>
+                                </div>
+                            </td>
                         </tr>
                     <?php endforeach; ?>
                 </tbody>
@@ -157,6 +227,30 @@ require_once 'includes/header.php';
         
         <div style="text-align: center; padding: 20px; color: #666;">
             Showing <?php echo count($subscribers); ?> records
+        </div>
+        
+        <!-- 删除确认模态框 -->
+        <div id="deleteModal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3><i class="fas fa-exclamation-triangle" style="color: #f44336;"></i> Confirm Delete</h3>
+                    <span class="close-modal" onclick="closeModal()">&times;</span>
+                </div>
+                <div class="modal-body">
+                    <p>Are you sure you want to delete subscriber <strong id="deleteEmail"></strong>?</p>
+                    <p>This action cannot be undone.</p>
+                </div>
+                <div class="modal-footer">
+                    <form id="deleteForm" method="POST" action="">
+                        <input type="hidden" name="subscriber_id" id="deleteSubscriberId">
+                        <input type="hidden" name="delete_subscriber" value="1">
+                        <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                        <button type="submit" class="btn btn-danger">
+                            <i class="fas fa-trash"></i> Delete
+                        </button>
+                    </form>
+                </div>
+            </div>
         </div>
     <?php endif; ?>
 </div>
@@ -250,11 +344,12 @@ tbody tr:hover {
     color: #721c24;
 }
 
-/* 警告框 */
+/* 警告框和消息框 */
 .alert {
     padding: 12px 15px;
     margin: 15px 0;
     border-radius: 4px;
+    position: relative;
 }
 
 .alert-error {
@@ -263,10 +358,39 @@ tbody tr:hover {
     border: 1px solid #f5c6cb;
 }
 
+.alert-success {
+    background: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
+}
+
+.alert-warning {
+    background: #fff3cd;
+    color: #856404;
+    border: 1px solid #ffeaa7;
+}
+
 .alert-info {
     background: #d1ecf1;
     color: #0c5460;
     border: 1px solid #bee5eb;
+}
+
+.close-btn {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    font-size: 20px;
+    cursor: pointer;
+    color: inherit;
+    opacity: 0.7;
+}
+
+.close-btn:hover {
+    opacity: 1;
 }
 
 /* 操作按钮 */
@@ -307,6 +431,59 @@ tbody tr:hover {
     color: #888;
 }
 
+/* 按钮样式 */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.3s;
+    text-decoration: none;
+}
+
+.btn-primary {
+    background: #4CAF50;
+    color: white;
+}
+
+.btn-primary:hover {
+    background: #45a049;
+}
+
+.btn-danger {
+    background: #f44336;
+    color: white;
+}
+
+.btn-danger:hover {
+    background: #d32f2f;
+}
+
+.btn-secondary {
+    background: #6c757d;
+    color: white;
+}
+
+.btn-secondary:hover {
+    background: #5a6268;
+}
+
+.btn-sm {
+    padding: 4px 10px;
+    font-size: 12px;
+}
+
+/* 动作按钮组 */
+.action-buttons {
+    display: flex;
+    gap: 5px;
+}
+
 /* 空状态 */
 .empty-state {
     text-align: center;
@@ -325,6 +502,79 @@ tbody tr:hover {
 .empty-state h3 {
     color: #666;
     margin-bottom: 10px;
+}
+
+/* 模态框样式 */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    align-items: center;
+    justify-content: center;
+}
+
+.modal-content {
+    background-color: white;
+    margin: auto;
+    padding: 0;
+    width: 90%;
+    max-width: 500px;
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+    animation: modalopen 0.3s;
+}
+
+@keyframes modalopen {
+    from {opacity: 0; transform: translateY(-50px);}
+    to {opacity: 1; transform: translateY(0);}
+}
+
+.modal-header {
+    padding: 15px 20px;
+    background: #f8f9fa;
+    border-bottom: 1px solid #dee2e6;
+    border-radius: 8px 8px 0 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.modal-header h3 {
+    margin: 0;
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.close-modal {
+    color: #aaa;
+    font-size: 28px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.close-modal:hover {
+    color: #000;
+}
+
+.modal-body {
+    padding: 20px;
+}
+
+.modal-footer {
+    padding: 15px 20px;
+    background: #f8f9fa;
+    border-top: 1px solid #dee2e6;
+    border-radius: 0 0 8px 8px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
 }
 
 /* 响应式 */
@@ -346,6 +596,10 @@ tbody tr:hover {
     
     table {
         min-width: 600px;
+    }
+    
+    .action-buttons {
+        flex-direction: column;
     }
 }
 </style>
@@ -404,6 +658,8 @@ function exportToCSV() {
             let cellText = cell.textContent || cell.innerText || '';
             // 移除状态标签的HTML
             cellText = cellText.replace(/Active|Inactive/g, '').trim();
+            // 移除操作按钮文本
+            cellText = cellText.replace(/Delete/g, '').trim();
             cellText = cellText.replace(/"/g, '""');
             return `"${cellText}"`;
         });
@@ -441,6 +697,51 @@ function showNotification(message) {
         notification.style.display = 'none';
     }, 3000);
 }
+
+// 删除订阅者功能
+function confirmDelete(subscriberId, email) {
+    const modal = document.getElementById('deleteModal');
+    const deleteEmail = document.getElementById('deleteEmail');
+    const deleteSubscriberId = document.getElementById('deleteSubscriberId');
+    const deleteForm = document.getElementById('deleteForm');
+    
+    // 设置删除信息
+    deleteEmail.textContent = email || 'Unknown';
+    deleteSubscriberId.value = subscriberId;
+    
+    // 显示模态框
+    modal.style.display = 'flex';
+    
+    // 关闭模态框点击外部
+    window.onclick = function(event) {
+        if (event.target === modal) {
+            closeModal();
+        }
+    }
+}
+
+// 关闭模态框
+function closeModal() {
+    const modal = document.getElementById('deleteModal');
+    modal.style.display = 'none';
+}
+
+// 为删除表单添加提交处理
+document.addEventListener('DOMContentLoaded', function() {
+    const deleteForm = document.getElementById('deleteForm');
+    if (deleteForm) {
+        deleteForm.addEventListener('submit', function(e) {
+            // 这里可以添加加载指示器
+            const submitBtn = this.querySelector('button[type="submit"]');
+            if (submitBtn) {
+                submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Deleting...';
+                submitBtn.disabled = true;
+            }
+            
+            // 表单会自动提交到服务器
+        });
+    }
+});
 </script>
 
 <?php 

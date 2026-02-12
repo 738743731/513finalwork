@@ -141,16 +141,110 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         $short_description = trim($_POST['short_description'] ?? '');
         $stock = intval($_POST['stock'] ?? 100);
         
+        // 新增字段的默认值
+        $long_description = trim($_POST['long_description'] ?? $short_description);
+        // 修改：从输入获取图片文件名，而不是使用默认值
+        $image_filename = trim($_POST['image'] ?? '');
+        if (!empty($image_filename)) {
+            $image = 'assets/images/' . $image_filename;
+        } else {
+            $image = 'assets/images/game_default.jpg'; // 默认图片
+        }
+        $developer = trim($_POST['developer'] ?? 'Unknown');
+        $publisher = trim($_POST['publisher'] ?? 'Unknown');
+        $release_date = date('Y-m-d'); // 默认使用当前日期
+        $platforms = json_encode(['PC']); // 默认平台为PC
+        $rating = 0.0;
+        $features = json_encode([]); // 空特性数组
+        
+        // 验证必填字段
         if (empty($name) || $price <= 0 || empty($category)) {
-            $error = "Please fill all required fields!";
+            $error = 'Please fill in all required fields with valid values.';
         } else {
             try {
-                $db->query(
-                    "INSERT INTO products (name, price, discount, category, short_description, stock) 
-                     VALUES (?, ?, ?, ?, ?, ?)",
-                    [$name, $price, $discount, $category, $short_description, $stock]
+                // 插入到数据库，包含图片路径
+                $product_id = $db->insert(
+                    "INSERT INTO products (name, price, discount, category, short_description, long_description, image, developer, publisher, release_date, platforms, rating, features, stock, sales, created_at) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NOW())",
+                    [$name, $price, $discount, $category, $short_description, $long_description, $image, $developer, $publisher, $release_date, $platforms, $rating, $features, $stock]
                 );
-                $success = "Product added successfully!";
+                
+                // 获取刚插入的产品数据，用于更新JSON文件
+                $new_product = $db->fetchOne("SELECT * FROM products WHERE id = ?", [$product_id]);
+                
+                if ($new_product) {
+                    // 更新JSON文件以确保前端能立即显示
+                    $json_file = dirname(__DIR__) . '/data/games.json';
+                    
+                    // 检查目录是否存在，不存在则创建
+                    $json_dir = dirname($json_file);
+                    if (!is_dir($json_dir)) {
+                        mkdir($json_dir, 0755, true);
+                    }
+                    
+                    // 检查文件是否存在，不存在则创建
+                    if (!file_exists($json_file)) {
+                        file_put_contents($json_file, '[]');
+                    }
+                    
+                    // 读取现有JSON数据
+                    $json_content = file_get_contents($json_file);
+                    $games = json_decode($json_content, true);
+                    
+                    if ($games === null) {
+                        // 如果JSON文件为空或格式错误，初始化数组
+                        $games = [];
+                    }
+                    
+                    // 确保没有重复的ID
+                    $games = array_filter($games, function($game) use ($product_id) {
+                        return isset($game['id']) && $game['id'] != $product_id;
+                    });
+                    
+                    // 创建新的游戏数据，确保格式与现有JSON一致
+                    $new_game = [
+                        'id' => (int)$product_id,
+                        'name' => $new_product['name'],
+                        'price' => (float)$new_product['price'],
+                        'discount' => (float)$new_product['discount'],
+                        'category' => $new_product['category'],
+                        'short_description' => $new_product['short_description'],
+                        'long_description' => $new_product['long_description'],
+                        'image' => $new_product['image'],
+                        'developer' => $new_product['developer'],
+                        'publisher' => $new_product['publisher'],
+                        'release_date' => $new_product['release_date'],
+                        'platforms' => json_decode($new_product['platforms'], true),
+                        'rating' => (float)$new_product['rating'],
+                        'features' => json_decode($new_product['features'], true)
+                    ];
+                    
+                    // 将新游戏添加到数组中
+                    $games[] = $new_game;
+                    
+                    // 按ID排序，保持一致性
+                    usort($games, function($a, $b) {
+                        return $b['id'] - $a['id'];
+                    });
+                    
+                    // 将数组转换回JSON格式
+                    $json_data = json_encode($games, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                    
+                    // 写回文件
+                    if (file_put_contents($json_file, $json_data)) {
+                        $success = "Product added successfully to both database and JSON file!";
+                    } else {
+                        // 记录详细的错误信息
+                        $error_details = "Failed to write JSON file. ";
+                        $error_details .= "File path: " . $json_file . ". ";
+                        $error_details .= "Writable: " . (is_writable($json_file) ? 'Yes' : 'No') . ". ";
+                        $error_details .= "Directory writable: " . (is_writable($json_dir) ? 'Yes' : 'No');
+                        $success = "Product added to database, but failed to update JSON file. Details: " . $error_details;
+                    }
+                } else {
+                    $success = "Product added to database, but could not retrieve product data for JSON update.";
+                }
+                
             } catch (Exception $e) {
                 $error = "Error adding product: " . $e->getMessage();
             }
@@ -168,6 +262,27 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                     "UPDATE products SET stock = ? WHERE id = ?",
                     [$stock, $product_id]
                 );
+                
+                // 同时更新JSON文件中的库存信息
+                $json_file = dirname(__DIR__) . '/data/games.json';
+                if (file_exists($json_file)) {
+                    $json_content = file_get_contents($json_file);
+                    $games = json_decode($json_content, true);
+                    
+                    if ($games !== null) {
+                        foreach ($games as &$game) {
+                            if (isset($game['id']) && $game['id'] == $product_id) {
+                                // 更新游戏对象中的库存信息
+                                $game['stock'] = $stock;
+                                break;
+                            }
+                        }
+                        
+                        $json_data = json_encode($games, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                        file_put_contents($json_file, $json_data);
+                    }
+                }
+                
                 $success = "Product updated successfully!";
             } catch (Exception $e) {
                 $error = "Error updating product: " . $e->getMessage();
@@ -185,6 +300,23 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                     "DELETE FROM products WHERE id = ?",
                     [$product_id]
                 );
+                
+                // 同时从JSON文件中删除
+                $json_file = dirname(__DIR__) . '/data/games.json';
+                if (file_exists($json_file)) {
+                    $json_content = file_get_contents($json_file);
+                    $games = json_decode($json_content, true);
+                    
+                    if ($games !== null) {
+                        $games = array_filter($games, function($game) use ($product_id) {
+                            return !isset($game['id']) || $game['id'] != $product_id;
+                        });
+                        
+                        $json_data = json_encode(array_values($games), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                        file_put_contents($json_file, $json_data);
+                    }
+                }
+                
                 $success = "Product deleted successfully!";
             } catch (Exception $e) {
                 $error = "Error deleting product: " . $e->getMessage();
@@ -192,7 +324,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         }
     }
     
-    // Update order status
+    // Update order status - 修复这里的问题
     if (isset($_POST['update_order_status'])) {
         $order_id = intval($_POST['order_id'] ?? 0);
         $new_status = trim($_POST['order_status'] ?? '');
@@ -200,27 +332,56 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         
         if ($order_id > 0 && !empty($new_status)) {
             try {
+                // 先检查 orders 表是否有 updated_at 字段
+                $orders_columns = $db->fetchAll("SHOW COLUMNS FROM orders");
+                $has_updated_at = false;
+                foreach ($orders_columns as $column) {
+                    if ($column['Field'] == 'updated_at') {
+                        $has_updated_at = true;
+                        break;
+                    }
+                }
+                
                 // 获取当前订单状态
                 $current_order = $db->fetchOne("SELECT status FROM orders WHERE id = ?", [$order_id]);
                 $old_status = $current_order['status'] ?? null;
                 
-                // 更新订单状态
-                $db->query(
-                    "UPDATE orders SET status = ?, updated_at = NOW() WHERE id = ?",
-                    [$new_status, $order_id]
-                );
+                // 根据是否有 updated_at 字段构建更新语句
+                if ($has_updated_at) {
+                    // 更新订单状态（包含 updated_at）
+                    $db->query(
+                        "UPDATE orders SET status = ?, updated_at = NOW() WHERE id = ?",
+                        [$new_status, $order_id]
+                    );
+                } else {
+                    // 更新订单状态（不包含 updated_at）
+                    $db->query(
+                        "UPDATE orders SET status = ? WHERE id = ?",
+                        [$new_status, $order_id]
+                    );
+                }
                 
-                // 记录状态变更历史
-                $db->query(
-                    "INSERT INTO order_status_history (order_id, old_status, new_status, changed_by, change_reason) 
-                     VALUES (?, ?, ?, ?, ?)",
-                    [$order_id, $old_status, $new_status, $_SESSION['display_name'] ?? 'Admin', $change_reason]
-                );
+                // 尝试记录状态变更历史，如果表不存在则跳过
+                try {
+                    // 检查 order_status_history 表是否存在
+                    $table_exists = $db->fetchOne("SHOW TABLES LIKE 'order_status_history'");
+                    
+                    if ($table_exists) {
+                        $db->query(
+                            "INSERT INTO order_status_history (order_id, old_status, new_status, changed_by, change_reason, created_at) 
+                             VALUES (?, ?, ?, ?, ?, NOW())",
+                            [$order_id, $old_status, $new_status, $_SESSION['display_name'] ?? 'Admin', $change_reason]
+                        );
+                    }
+                } catch (Exception $e) {
+                    // 如果插入历史记录失败，只记录错误，不阻止整个操作
+                    error_log("Failed to insert order status history: " . $e->getMessage());
+                }
                 
                 $success = "Order #{$order_id} status updated to '{$new_status}' successfully!";
             } catch (Exception $e) {
                 $error = "Error updating order status: " . $e->getMessage();
-                error_log("Order status update error: " . $e->getMessage());
+                error_log("Order status update error: " . $e->getMessage() . "\nTrace: " . $e->getTraceAsString());
             }
         } else {
             $error = "Invalid order data provided!";
@@ -234,26 +395,56 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         
         if ($order_id > 0) {
             try {
+                // 先检查 orders 表是否有 updated_at 字段
+                $orders_columns = $db->fetchAll("SHOW COLUMNS FROM orders");
+                $has_updated_at = false;
+                foreach ($orders_columns as $column) {
+                    if ($column['Field'] == 'updated_at') {
+                        $has_updated_at = true;
+                        break;
+                    }
+                }
+                
                 // 获取当前订单状态
                 $current_order = $db->fetchOne("SELECT status FROM orders WHERE id = ?", [$order_id]);
                 $old_status = $current_order['status'] ?? null;
                 
-                // 更新订单状态为取消
-                $db->query(
-                    "UPDATE orders SET status = 'cancelled', updated_at = NOW() WHERE id = ?",
-                    [$order_id]
-                );
+                // 根据是否有 updated_at 字段构建更新语句
+                if ($has_updated_at) {
+                    // 更新订单状态为取消（包含 updated_at）
+                    $db->query(
+                        "UPDATE orders SET status = 'cancelled', updated_at = NOW() WHERE id = ?",
+                        [$order_id]
+                    );
+                } else {
+                    // 更新订单状态为取消（不包含 updated_at）
+                    $db->query(
+                        "UPDATE orders SET status = 'cancelled' WHERE id = ?",
+                        [$order_id]
+                    );
+                }
                 
-                // 记录状态变更历史
-                $db->query(
-                    "INSERT INTO order_status_history (order_id, old_status, new_status, changed_by, change_reason) 
-                     VALUES (?, ?, ?, ?, ?)",
-                    [$order_id, $old_status, 'cancelled', $_SESSION['display_name'] ?? 'Admin', "Cancelled: " . $cancel_reason]
-                );
+                // 尝试记录状态变更历史，如果表不存在则跳过
+                try {
+                    // 检查 order_status_history 表是否存在
+                    $table_exists = $db->fetchOne("SHOW TABLES LIKE 'order_status_history'");
+                    
+                    if ($table_exists) {
+                        $db->query(
+                            "INSERT INTO order_status_history (order_id, old_status, new_status, changed_by, change_reason, created_at) 
+                             VALUES (?, ?, ?, ?, ?, NOW())",
+                            [$order_id, $old_status, 'cancelled', $_SESSION['display_name'] ?? 'Admin', "Cancelled: " . $cancel_reason]
+                        );
+                    }
+                } catch (Exception $e) {
+                    // 如果插入历史记录失败，只记录错误，不阻止整个操作
+                    error_log("Failed to insert order status history: " . $e->getMessage());
+                }
                 
                 $success = "Order #{$order_id} has been cancelled successfully!";
             } catch (Exception $e) {
                 $error = "Error cancelling order: " . $e->getMessage();
+                error_log("Cancel order error: " . $e->getMessage());
             }
         }
     }
@@ -878,7 +1069,7 @@ try {
                         <?php else: ?>
                             <p class="text-center">No categories found</p>
                         <?php endif; ?>
-                    </div>
+                        </div>
                 </div>
                 
                 <!-- Stock Alerts -->
@@ -950,8 +1141,32 @@ try {
                     </div>
                     
                     <div class="form-group">
-                        <label>Initial Stock</label>
-                        <input type="number" name="stock" min="0" value="100">
+                        <label>Long Description</label>
+                        <textarea name="long_description" rows="3" placeholder="Detailed description"></textarea>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Developer</label>
+                            <input type="text" name="developer" placeholder="Developer name">
+                        </div>
+                        <div class="form-group">
+                            <label>Publisher</label>
+                            <input type="text" name="publisher" placeholder="Publisher name">
+                        </div>
+                    </div>
+                    
+                    <!-- 修改：将图片上传改为手动输入图片文件名 -->
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Product Image *</label>
+                            <input type="text" name="image" required placeholder="Enter image filename (e.g., game1.jpg)">
+                            <small class="form-text text-muted">Enter the filename of the image located in assets/images folder</small>
+                        </div>
+                        <div class="form-group">
+                            <label>Initial Stock</label>
+                            <input type="number" name="stock" min="0" value="100">
+                        </div>
                     </div>
                     
                     <button type="submit" name="add_product" class="btn btn-primary">
@@ -996,6 +1211,75 @@ try {
                             <?php endif; ?>
                         </tbody>
                     </table>
+                </div>
+            </div>
+        </div>
+        
+        <!-- JSON File Status -->
+        <div class="dashboard-card">
+            <h3><i class="fas fa-file-code"></i> JSON File Status</h3>
+            <div class="json-status">
+                <?php
+                $json_file = dirname(__DIR__) . '/data/games.json';
+                $json_exists = file_exists($json_file);
+                $json_writable = $json_exists ? is_writable($json_file) : false;
+                $json_size = $json_exists ? filesize($json_file) : 0;
+                
+                if ($json_exists) {
+                    $json_content = file_get_contents($json_file);
+                    $games_data = json_decode($json_content, true);
+                    $game_count = is_array($games_data) ? count($games_data) : 0;
+                }
+                ?>
+                <div class="status-item">
+                    <span class="status-label">File Path:</span>
+                    <span class="status-value"><?php echo htmlspecialchars($json_file); ?></span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">File Exists:</span>
+                    <span class="status-value <?php echo $json_exists ? 'text-success' : 'text-danger'; ?>">
+                        <?php echo $json_exists ? 'Yes' : 'No'; ?>
+                    </span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Writable:</span>
+                    <span class="status-value <?php echo $json_writable ? 'text-success' : 'text-danger'; ?>">
+                        <?php echo $json_writable ? 'Yes' : 'No'; ?>
+                    </span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">File Size:</span>
+                    <span class="status-value"><?php echo number_format($json_size / 1024, 2); ?> KB</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Games in JSON:</span>
+                    <span class="status-value"><?php echo $json_exists && isset($game_count) ? $game_count : 'N/A'; ?></span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Games in Database:</span>
+                    <span class="status-value"><?php echo $total_products; ?></span>
+                </div>
+                
+                <?php if (!$json_exists || !$json_writable): ?>
+                    <div class="alert alert-warning mt-3">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        JSON file issues detected. Products may not appear on the frontend.
+                        <?php if (!$json_exists): ?>
+                            <br>File does not exist at: <?php echo htmlspecialchars($json_file); ?>
+                        <?php endif; ?>
+                        <?php if (!$json_writable): ?>
+                            <br>File is not writable. Please check permissions.
+                        <?php endif; ?>
+                    </div>
+                <?php endif; ?>
+                
+                <div class="mt-3">
+                    <button onclick="syncJsonFile()" class="btn btn-secondary btn-sm">
+                        <i class="fas fa-sync"></i> Force Sync JSON File
+                    </button>
+                    <button onclick="viewJsonContent()" class="btn btn-outline btn-sm">
+                        <i class="fas fa-eye"></i> View JSON Content
+                    </button>
                 </div>
             </div>
         </div>
@@ -2083,6 +2367,51 @@ body {
     padding-bottom: 15px;
 }
 
+/* JSON Status Styles */
+.json-status {
+    padding: 15px;
+    background: #f8f9fa;
+    border-radius: 8px;
+    border: 1px solid #dee2e6;
+}
+
+.status-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid #e9ecef;
+}
+
+.status-item:last-child {
+    border-bottom: none;
+}
+
+.status-label {
+    font-weight: 600;
+    color: #495057;
+}
+
+.status-value {
+    color: #6c757d;
+}
+
+.text-success {
+    color: #28a745;
+}
+
+.text-danger {
+    color: #dc3545;
+}
+
+.mt-3 {
+    margin-top: 15px;
+}
+
+.btn-sm {
+    padding: 6px 12px;
+    font-size: 13px;
+}
+
 /* Order Status Badges */
 .status-badge {
     padding: 5px 12px;
@@ -2617,6 +2946,13 @@ body {
     margin: 0;
 }
 
+.product-form small {
+    display: block;
+    margin-top: 5px;
+    color: #6c757d;
+    font-size: 12px;
+}
+
 /* Tables */
 .table-responsive {
     overflow-x: auto;
@@ -2824,7 +3160,7 @@ body {
 }
 
 .btn-danger:hover {
-    background: linear-gradient(135deg, #c82333, #b21f2d);
+    background: linear-gradient(135deg, #c82333, #bd2130);
     transform: translateY(-2px);
     box-shadow: 0 4px 12px rgba(220,53,69,0.3);
 }
@@ -3610,6 +3946,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const nameInput = this.querySelector('input[name="name"]');
             const priceInput = this.querySelector('input[name="price"]');
             const categorySelect = this.querySelector('select[name="category"]');
+            const imageInput = this.querySelector('input[name="image"]');
             
             let isValid = true;
             let errorMessage = '';
@@ -3626,6 +3963,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 isValid = false;
                 errorMessage = 'Category is required';
                 categorySelect.focus();
+            } else if (!imageInput.value.trim()) {
+                isValid = false;
+                errorMessage = 'Image filename is required';
+                imageInput.focus();
             }
             
             if (!isValid) {
@@ -3930,7 +4271,46 @@ document.addEventListener('DOMContentLoaded', function() {
             showToast('Inventory report generated successfully!', 'success');
         }, 1500);
     };
+    
+    // JSON file synchronization functions
+    window.syncJsonFile = function() {
+        if (!confirm('This will synchronize all products from the database to the JSON file. Continue?')) {
+            return;
+        }
+        
+        showToast('Starting JSON synchronization...', 'info');
+        
+        // Use AJAX to call a synchronization endpoint
+        fetch('api/sync_json.php')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast('JSON file synchronized successfully!', 'success');
+                    // Reload the page after a short delay
+                    setTimeout(() => {
+                        location.reload();
+                    }, 2000);
+                } else {
+                    showToast('Error: ' + data.message, 'error');
+                }
+            })
+            .catch(error => {
+                showToast('Error synchronizing JSON file: ' + error.message, 'error');
+            });
+    };
+    
+    window.viewJsonContent = function() {
+        // Open JSON file in a new window
+        window.open('data/games.json', '_blank');
+    };
 });
+
+// Add additional JavaScript functions for JSON management
+function updateJsonFileFromDatabase() {
+    // This function would make an AJAX call to update the JSON file
+    console.log('Updating JSON file from database...');
+    // In a real implementation, this would call an API endpoint
+}
 </script>
 
 <?php 

@@ -23,6 +23,9 @@ function initializeComponents() {
     
     // Initialize form validation
     initFormValidation();
+    
+    // Initialize cart from localStorage
+    initCartFromStorage();
 }
 
 // Setup global event listeners
@@ -30,205 +33,146 @@ function setupEventListeners() {
     // Add to cart buttons (for dynamically loaded content)
     document.addEventListener('click', function(e) {
         if (e.target.closest('.add-to-cart')) {
+            e.preventDefault();
             const button = e.target.closest('.add-to-cart');
             const gameData = button.dataset.game;
             if (gameData) {
-                const game = JSON.parse(gameData);
-                addToCart(game);
+                try {
+                    const game = JSON.parse(gameData);
+                    addToCart(game);
+                } catch (error) {
+                    console.error('Error parsing game data:', error);
+                    showNotification('Error adding item to cart', 'error');
+                }
             }
         }
-        
-        // Remove from cart
-        if (e.target.closest('.remove-from-cart')) {
-            const button = e.target.closest('.remove-from-cart');
-            const gameId = button.dataset.gameId;
-            removeFromCart(gameId);
-        }
-        
-        // Quantity updates
-        if (e.target.closest('.quantity-update')) {
-            const button = e.target.closest('.quantity-update');
-            const gameId = button.dataset.gameId;
-            const change = button.dataset.change;
-            updateCartQuantity(gameId, parseInt(change));
-        }
     });
-    
-    // Search functionality
-    const searchInput = document.getElementById('global-search');
-    if (searchInput) {
-        searchInput.addEventListener('input', debounce(performSearch, 300));
-    }
 }
 
 // Cart Functions
-function loadCartCount() {
-    const cart = JSON.parse(localStorage.getItem('cart')) || [];
-    const cartCount = cart.reduce((total, item) => total + item.quantity, 0);
-    
-    // Update cart count in header
-    const cartCountElements = document.querySelectorAll('.cart-count');
-    cartCountElements.forEach(element => {
-        element.textContent = cartCount;
-        element.style.display = cartCount > 0 ? 'inline' : 'none';
-    });
-    
-    return cartCount;
+function initCartFromStorage() {
+    // Ensure cart exists in localStorage
+    if (!localStorage.getItem('cart')) {
+        localStorage.setItem('cart', JSON.stringify([]));
+    }
 }
 
 function addToCart(game) {
+    // Get current cart
     let cart = JSON.parse(localStorage.getItem('cart')) || [];
-    const existingItem = cart.find(item => item.id === game.id);
     
-    if (existingItem) {
-        existingItem.quantity += 1;
+    // Check if game already exists in cart
+    const existingItemIndex = cart.findIndex(item => item.id === game.id);
+    
+    if (existingItemIndex > -1) {
+        // Update quantity if item exists
+        cart[existingItemIndex].quantity += game.quantity || 1;
     } else {
-        game.quantity = 1;
-        cart.push(game);
+        // Add new item
+        const cartItem = {
+            id: game.id,
+            name: game.name,
+            price: game.price,
+            discount: game.discount || 0,
+            image: game.image || '',
+            category: game.category || '',
+            quantity: game.quantity || 1
+        };
+        cart.push(cartItem);
     }
     
+    // Save to localStorage
     localStorage.setItem('cart', JSON.stringify(cart));
-    loadCartCount();
-    showNotification(`${game.name} added to cart!`, 'success');
     
-    // Update cart page if it's open
-    if (document.getElementById('cart-container')) {
-        loadCartPage();
-    }
+    // Update UI
+    updateCartCount(cart.length);
+    showNotification('Item added to cart!', 'success');
+    
+    // Sync to server for logged-in users
+    syncCartToServer();
 }
 
-function removeFromCart(gameId) {
+function removeFromCart(productId) {
     let cart = JSON.parse(localStorage.getItem('cart')) || [];
-    cart = cart.filter(item => item.id !== parseInt(gameId));
+    cart = cart.filter(item => item.id !== productId);
     localStorage.setItem('cart', JSON.stringify(cart));
-    loadCartCount();
-    showNotification('Item removed from cart!', 'info');
-    
-    if (document.getElementById('cart-container')) {
-        loadCartPage();
-    }
+    updateCartCount(cart.length);
+    return cart;
 }
 
-function updateCartQuantity(gameId, change) {
+function updateCartItemQuantity(productId, quantity) {
     let cart = JSON.parse(localStorage.getItem('cart')) || [];
-    const itemIndex = cart.findIndex(item => item.id === parseInt(gameId));
+    const itemIndex = cart.findIndex(item => item.id === productId);
     
-    if (itemIndex !== -1) {
-        cart[itemIndex].quantity += change;
-        
-        if (cart[itemIndex].quantity <= 0) {
+    if (itemIndex > -1) {
+        if (quantity <= 0) {
             cart.splice(itemIndex, 1);
-            showNotification('Item removed from cart!', 'info');
         } else {
-            showNotification('Cart updated!', 'success');
+            cart[itemIndex].quantity = quantity;
         }
-        
         localStorage.setItem('cart', JSON.stringify(cart));
-        loadCartCount();
-        
-        if (document.getElementById('cart-container')) {
-            loadCartPage();
-        }
     }
+    
+    updateCartCount(cart.length);
+    return cart;
 }
 
-function loadCartPage() {
-    const cart = JSON.parse(localStorage.getItem('cart')) || [];
-    const container = document.getElementById('cart-container');
-    const summary = document.getElementById('cart-summary');
-    
-    if (!container) return;
-    
-    if (cart.length === 0) {
-        container.innerHTML = `
-            <div class="empty-cart">
-                <i class="fas fa-shopping-cart"></i>
-                <h3>Your cart is empty</h3>
-                <p>Add some games to get started!</p>
-                <a href="products.php" class="btn btn-primary">Browse Games</a>
-            </div>
-        `;
-        if (summary) summary.innerHTML = '';
-        return;
-    }
-    
-    let html = '';
-    let subtotal = 0;
-    
-    cart.forEach((item, index) => {
-        const price = item.discount > 0 ? 
-            item.price * (100 - item.discount) / 100 : 
-            item.price;
-        const total = price * item.quantity;
-        subtotal += total;
-        
-        html += `
-            <div class="cart-item" data-index="${index}">
-                <div class="item-image">
-                    <img src="${item.image}" alt="${item.name}">
-                </div>
-                <div class="item-details">
-                    <h4>${item.name}</h4>
-                    <p class="item-category">${item.category}</p>
-                    <p class="item-price">$${price.toFixed(2)} each</p>
-                </div>
-                <div class="item-quantity">
-                    <button class="btn btn-sm quantity-update" data-game-id="${item.id}" data-change="-1">
-                        <i class="fas fa-minus"></i>
-                    </button>
-                    <span class="quantity">${item.quantity}</span>
-                    <button class="btn btn-sm quantity-update" data-game-id="${item.id}" data-change="1">
-                        <i class="fas fa-plus"></i>
-                    </button>
-                </div>
-                <div class="item-total">
-                    <strong>$${total.toFixed(2)}</strong>
-                </div>
-                <div class="item-remove">
-                    <button class="btn btn-danger btn-sm remove-from-cart" data-game-id="${item.id}">
-                        <i class="fas fa-trash"></i>
-                    </button>
-                </div>
-            </div>
-        `;
+function getCart() {
+    return JSON.parse(localStorage.getItem('cart')) || [];
+}
+
+function clearCart() {
+    localStorage.setItem('cart', JSON.stringify([]));
+    updateCartCount(0);
+}
+
+function syncCartToServer() {
+    // Only sync if user is logged in
+    fetch('includes/auth_check.php')
+        .then(response => response.json())
+        .then(data => {
+            if (data.logged_in) {
+                const cart = getCart();
+                fetch('cart_sync.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ cart: cart })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        console.log('Cart synced to server');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error syncing cart:', error);
+                });
+            }
+        })
+        .catch(error => {
+            console.error('Error checking auth:', error);
+        });
+}
+
+function loadCartCount() {
+    const cart = getCart();
+    updateCartCount(cart.length);
+}
+
+function updateCartCount(count) {
+    const cartCountElements = document.querySelectorAll('.cart-count');
+    cartCountElements.forEach(element => {
+        element.textContent = count;
+        element.style.display = count > 0 ? 'inline' : 'none';
     });
-    
-    const tax = subtotal * 0.1;
-    const shipping = subtotal > 100 ? 0 : 9.99;
-    const grandTotal = subtotal + tax + shipping;
-    
-    container.innerHTML = html;
-    
-    if (summary) {
-        summary.innerHTML = `
-            <div class="summary-card">
-                <h4>Order Summary</h4>
-                <div class="summary-row">
-                    <span>Subtotal</span>
-                    <span>$${subtotal.toFixed(2)}</span>
-                </div>
-                <div class="summary-row">
-                    <span>Tax (10%)</span>
-                    <span>$${tax.toFixed(2)}</span>
-                </div>
-                <div class="summary-row">
-                    <span>Shipping</span>
-                    <span>${shipping === 0 ? 'FREE' : `$${shipping.toFixed(2)}`}</span>
-                </div>
-                <div class="summary-row total">
-                    <span>Total</span>
-                    <span>$${grandTotal.toFixed(2)}</span>
-                </div>
-                <a href="checkout.php" class="btn btn-primary btn-block">Proceed to Checkout</a>
-            </div>
-        `;
-    }
 }
 
 // Notification System
 function showNotification(message, type = 'info') {
     // Remove existing notifications
-    const existingNotifications = document.querySelectorAll('.notification');
+    const existingNotifications = document.querySelectorAll('.cart-notification, .notification');
     existingNotifications.forEach(notification => {
         notification.remove();
     });
@@ -272,18 +216,6 @@ function showNotification(message, type = 'info') {
             }
         }, 300);
     });
-}
-
-// Search Functions
-function performSearch(query) {
-    if (!query) return;
-    
-    // Here you would typically make an AJAX request to search the server
-    // For now, we'll just show a notification
-    if (query.length >= 3) {
-        console.log(`Searching for: ${query}`);
-        // You can implement actual search logic here
-    }
 }
 
 // Utility Functions
@@ -477,89 +409,15 @@ function markValid(input) {
     }
 }
 
-// AJAX Functions
-function ajaxRequest(url, method = 'GET', data = null) {
-    return new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open(method, url);
-        xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
-        
-        if (data && method === 'POST') {
-            xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        }
-        
-        xhr.onload = function() {
-            if (xhr.status >= 200 && xhr.status < 300) {
-                try {
-                    const response = JSON.parse(xhr.responseText);
-                    resolve(response);
-                } catch (e) {
-                    resolve(xhr.responseText);
-                }
-            } else {
-                reject(new Error(`Request failed with status ${xhr.status}`));
-            }
-        };
-        
-        xhr.onerror = function() {
-            reject(new Error('Network error'));
-        };
-        
-        if (data && method === 'POST') {
-            const formData = new URLSearchParams();
-            for (const key in data) {
-                formData.append(key, data[key]);
-            }
-            xhr.send(formData);
-        } else {
-            xhr.send();
-        }
-    });
-}
-
-// Cookie Functions
-function setCookie(name, value, days) {
-    let expires = "";
-    if (days) {
-        const date = new Date();
-        date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
-        expires = "; expires=" + date.toUTCString();
-    }
-    document.cookie = name + "=" + (value || "") + expires + "; path=/";
-}
-
-function getCookie(name) {
-    const nameEQ = name + "=";
-    const ca = document.cookie.split(';');
-    for (let i = 0; i < ca.length; i++) {
-        let c = ca[i];
-        while (c.charAt(0) === ' ') c = c.substring(1, c.length);
-        if (c.indexOf(nameEQ) === 0) return c.substring(nameEQ.length, c.length);
-    }
-    return null;
-}
-
-function eraseCookie(name) {
-    document.cookie = name + '=; Max-Age=-99999999;';
-}
-
 // Export functions for use in other scripts
 window.GameHub = {
     addToCart,
     removeFromCart,
-    updateCartQuantity,
-    loadCartCount,
+    updateCartItemQuantity,
+    getCart,
+    clearCart,
+    updateCartCount,
     showNotification,
-    ajaxRequest,
     formatPrice,
-    setCookie,
-    getCookie,
-    eraseCookie
+    syncCartToServer
 };
-
-// Initialize on page load
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initializeComponents);
-} else {
-    initializeComponents();
-}
